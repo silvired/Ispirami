@@ -4,7 +4,7 @@ class ModelRecipe:
     url = ""
     ingredients = []
 
-    def toDictionary(self):
+    def to_dictionary(self):
         recipe = {
             "title": self.title,
             "category": self.category,
