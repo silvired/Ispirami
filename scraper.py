@@ -58,7 +58,7 @@ class Scraper:
             model_recipe.url = link_recipe_to_download
             model_recipe.n_people = n_people
 
-            create_file_json(model_recipe.toDictionary(), file_path)
+            create_file_json(model_recipe.to_dictionary(), file_path)
 
     def calculate_file_path(self, title):
         compact_name = title.replace(" ", "_").lower()
