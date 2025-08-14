@@ -7,11 +7,12 @@ from bs4 import BeautifulSoup
 from tqdm import tqdm
 
 sys.path.append(os.path.abspath(".."))
+sys.path.append(os.path.abspath("test NLP"))
 
 from model_recipe import ModelRecipe
-from quantity_udm_parser import get_quantity_udm
+from test_nlp import nlp
 
-debug = False
+debug = True
 
 class Scraper:
     def __init__(self):
@@ -22,18 +23,22 @@ class Scraper:
             os.makedirs(self.folder_recipes)
 
     def download_cookbook(self):
-        total_pages = self.count_total_pages() + 1
+        # Limit to 7 pages for testing purposes
+        total_pages = min(3, self.count_total_pages() + 1)
         total_recipes_processed = 0
         total_recipes_saved = 0
+        print(f"TESTING MODE: Scraping only {total_pages} pages")
+        
         for page_number in tqdm(range(1, total_pages), desc="pages…", ascii=False, ncols=75):
             print(f"\nProcessing page {page_number}/{total_pages-1}...")
             
             # Cautious strategy: Sleep for 5 minutes every 40 pages to avoid being blocked
-            if page_number > 1 and page_number % 40 == 0:
-                print(f"\n⚠️  Cautious pause: Sleeping for 5 minutes after processing {page_number} pages...")
-                import time
-                time.sleep(300)  # 5 minutes = 300 seconds
-                print("Resuming scraping...")
+            # Removed for testing purposes - was causing slowness
+            # if page_number > 1 and page_number % 40 == 0:
+            #     print(f"\n⚠️  Cautious pause: Sleeping for 5 minutes after processing {page_number} pages...")
+            #     import time
+            #     time.sleep(300)  # 5 minutes = 300 seconds
+            #     print("Resuming scraping...")
             
             # New URL structure: /page2/ instead of /page/2
             if page_number == 1:
@@ -50,55 +55,100 @@ class Scraper:
             # Try to find the recipe cards and extract their links
             recipe_links = []
             
-            # Method 1: Look for recipe cards with links
-            recipe_cards = soup.find_all(['article', 'div'], class_=lambda x: x and ('recipe' in x.lower() or 'card' in x.lower()))
-            for card in recipe_cards:
-                link_elem = card.find('a')
-                if link_elem and link_elem.get('href'):
-                    href = link_elem.get('href')
-                    if href and not href.startswith('#'):
+            # Method 1: Look for recipe links in elements with class="gz-title"
+            recipe_title_elements = soup.find_all(class_="gz-title")
+            if recipe_title_elements:
+                if debug:
+                    print(f"Found {len(recipe_title_elements)} recipe title elements with class 'gz-title'")
+                
+                for elem in recipe_title_elements:
+                    # Extract recipe link from href attribute
+                    href = elem.get('href')
+                    if href and not href.startswith('#') and not href.startswith('javascript:'):
+                        # Convert relative URL to absolute URL
                         if href.startswith('/'):
                             href = 'https://www.giallozafferano.it' + href
+                        
+                        # Clean up URL by removing anchor fragments
+                        if '#' in href:
+                            href = href.split('#')[0]
+                        
                         recipe_links.append(href)
+                        
+                        if debug:
+                            recipe_name = elem.get('title', 'No title')
+                            print(f"  Found recipe: {recipe_name} -> {href}")
             
-            # Method 2: If no recipe cards found, look for any links that might be recipes
+            # Method 2: If no gz-title elements found, try other selectors
+            if not recipe_links:
+                recipe_selectors = [
+                    'a[href*="/ricette/"]',  # Links containing /ricette/
+                    'a[href*=".html"]',      # Links ending with .html
+                    '.recipe-card a',        # Recipe card links
+                    '.recipe-item a',        # Recipe item links
+                    'h2 a',                  # Links within h2 tags (recipe titles)
+                    'h3 a',                  # Links within h3 tags
+                ]
+                
+                for selector in recipe_selectors:
+                    try:
+                        links = soup.select(selector)
+                        if links:
+                            if debug:
+                                print(f"Found {len(links)} links with selector '{selector}'")
+                            for link in links:
+                                href = link.get('href')
+                                if href and not href.startswith('#') and not href.startswith('javascript:'):
+                                    # Convert relative URL to absolute URL
+                                    if href.startswith('/'):
+                                        href = 'https://www.giallozafferano.it' + href
+                                    
+                                    # Clean up URL by removing anchor fragments
+                                    if '#' in href:
+                                        href = href.split('#')[0]
+                                    
+                                    recipe_links.append(href)
+                            break  # Use the first selector that finds links
+                    except Exception as e:
+                        if debug:
+                            print(f"Error with selector '{selector}': {e}")
+            
+            # Method 3: If still no links, look for any links that might be recipes
             if not recipe_links:
                 all_links = soup.find_all('a')
                 for link in all_links:
                     href = link.get('href')
                     if href and not href.startswith('#') and not href.startswith('javascript:'):
-                        # Look for recipe-like URLs
-                        if '/ricette/' in href or href.endswith('.html'):
+                        # Look for recipe-like URLs but exclude category pages
+                        if '/ricette/' in href and '/ricette-cat/' not in href and href.endswith('.html'):
                             if href.startswith('/'):
                                 href = 'https://www.giallozafferano.it' + href
+                            
+                            # Clean up URL by removing anchor fragments
+                            if '#' in href:
+                                href = href.split('#')[0]
+                            
                             recipe_links.append(href)
             
             # Remove duplicates
             recipe_links = list(set(recipe_links))
             
             print(f"Page {page_number}: Found {len(recipe_links)} recipe links")
-            for i, recipe_link in enumerate(recipe_links):
-                # Add a small delay between requests to be respectful to the website
-                if i > 0:
-                    import time
-                    time.sleep(0.5)  # 500ms delay between requests
-                
-                # Check if this is an actual recipe link (not a category page)
-                if '/ricette/' in recipe_link or recipe_link.endswith('.html'):
-                    total_recipes_processed += 1
-                    if self.save_recipe(recipe_link):
-                        total_recipes_saved += 1
-                        page_recipes += 1
-                else:
-                    # Skip category pages
-                    if i < 2:
-                        print(f"Skipping category page: {recipe_link}")
-            print(f"Page {page_number}: {page_recipes} recipes saved")
+            if debug and recipe_links:
+                print("Sample recipe links found:")
+                for i, link in enumerate(recipe_links[:5]):  # Show first 5 links
+                    print(f"  {i+1}: {link}")
             
-            # Add a delay between pages to be respectful to the website
-            if page_number < total_pages - 1:
-                import time
-                time.sleep(1)  # 1 second delay between pages
+            for i, recipe_link in enumerate(recipe_links):
+                # Process all recipe links found (we know they're correct from gz-title elements)
+                total_recipes_processed += 1
+                if self.process_recipe(recipe_link):
+                    total_recipes_saved += 1
+                    page_recipes += 1
+                
+            print(f"Page {page_number}: {page_recipes} recipes processed")
+            
+            # No delay between pages for faster testing
         
         print(f"Total recipes processed: {total_recipes_processed}")
         print(f"Total recipes saved: {total_recipes_saved}")
@@ -112,7 +162,7 @@ class Scraper:
             number_of_pages = int(tag.text)
         return number_of_pages
 
-    def save_recipe(self, link_recipe_to_download):
+    def process_recipe(self, link_recipe_to_download):
         soup = download_page(link_recipe_to_download)
         ingredients = find_ingredients(soup)
         title = find_title(soup)
@@ -124,18 +174,48 @@ class Scraper:
             category = find_category(soup)
             n_people = find_n_people(soup)
 
-            file_path = self.calculate_file_path(title)
-            if os.path.exists(file_path):
-                return False
-
-            model_recipe = ModelRecipe()
-            model_recipe.title = title
-            model_recipe.ingredients = ingredients
-            model_recipe.category = category
-            model_recipe.url = link_recipe_to_download
-            model_recipe.n_people = n_people
-
-            create_file_json(model_recipe.to_dictionary(), file_path)
+            # Process ingredients with NLP instead of saving to file
+            print(f"\n=== RECIPE: {title} ===")
+            print(f"Category: {category}")
+            print(f"People: {n_people}")
+            print(f"URL: {link_recipe_to_download}")
+            print("\n=== INGREDIENT ANALYSIS ===")
+            
+            for i, ingredient in enumerate(ingredients, 1):
+                # Handle ingredients as [name, quantity] pairs
+                if isinstance(ingredient, list) and len(ingredient) == 2:
+                    ingredient_name = ingredient[0]
+                    ingredient_quantity = ingredient[1]
+                else:
+                    # Fallback for single string ingredients
+                    ingredient_name = ingredient if isinstance(ingredient, str) else str(ingredient)
+                    ingredient_quantity = ""
+                
+                # Clean up ingredient text: remove external spaces, tabs, and newlines
+                ingredient_name = ingredient_name.replace('\t', '').replace('\n', '').replace('\r', '') if ingredient_name else ""
+                ingredient_quantity = ingredient_quantity.replace('\t', '').replace('\n', '').replace('\r', '') if ingredient_quantity else ""
+                
+                # Remove multiple consecutive spaces
+                ingredient_name = ' '.join(ingredient_name.split()) if ingredient_name else ""
+                ingredient_quantity = ' '.join(ingredient_quantity.split()) if ingredient_quantity else ""
+                
+                # Create full ingredient by combining name and quantity
+                if ingredient_name and ingredient_quantity:
+                    full_ingredient = f"{ingredient_name} {ingredient_quantity}"
+                elif ingredient_name:
+                    full_ingredient = ingredient_name
+                else:
+                    full_ingredient = ingredient_quantity
+                
+                
+                # Use NLP to analyze the full ingredient
+                doc = nlp(full_ingredient)
+                print(f"  Tokens: {len(doc)}")
+                
+                for token in doc:
+                    print(f"    {token.text:<15} {token.pos_:<10} {token.dep_:<10}")
+            
+            print("\n" + "="*50)
             return True
         return False
 
@@ -209,39 +289,37 @@ def find_title(soup):
 
 def find_ingredients(soup):
     all_ingredients = []
-    # Try multiple selectors for ingredients in the new structure
-    ingredient_selectors = [
-        '.ingredient',  # Common ingredient class
-        '.recipe-ingredient',  # Recipe ingredient class
-        '.ingredients-list li',  # Ingredients list items
-        '.ingredient-item',  # Ingredient item class
-        'li[data-ingredient]',  # Data attribute for ingredients
-        '.gz-ingredient'  # Keep old selector as fallback
-    ]
     
-    for selector in ingredient_selectors:
-        ingredient_tags = soup.select(selector)
-        if debug:
-            print(f"Trying selector '{selector}': Found {len(ingredient_tags)} ingredient tags")
+    # 1 - get all ingredients tags having class_="gz-ingredient"
+    ingredient_tags = soup.find_all(class_="gz-ingredient")
+    
+    print(f"Found {len(ingredient_tags)} ingredient tags")
+    
+    # 2 - loop through ingredients and enumerate them
+    for i, tag in enumerate(ingredient_tags, 1):
+        print(f"Processing ingredient {i}")
         
-        if ingredient_tags:
-            for tag in ingredient_tags:
-                try:
-                    # Try different ways to extract ingredient name and quantity
-                    ingredient_text = tag.get_text().strip()
-                    if ingredient_text:
-                        # Simple parsing: assume format is "ingredient quantity unit"
-                        parts = ingredient_text.split()
-                        if len(parts) >= 2:
-                            # Try to extract quantity and unit from the last parts
-                            quantity, udm = get_quantity_udm(ingredient_text)
-                            # Assume the ingredient name is everything except quantity/unit
-                            name_ingredient = ingredient_text.lower()
-                            all_ingredients.append([name_ingredient, quantity, udm])
-                except Exception as e:
-                    if debug:
-                        print(f"Error processing ingredient tag: {e}")
-            break  # Use the first selector that finds ingredients
+        # 4 - get ingredient name from tag <a>
+        name_elem = tag.find('a')
+        ingredient_name = ""
+        if name_elem:
+            ingredient_name = name_elem.get_text()
+        
+        # 5 - print ingredient name raw
+        print(f"  Ingredient name raw: '{ingredient_name}'")
+        
+        # 6 - get ingredient quantity from tag <span>
+        quantity_elem = tag.find('span')
+        ingredient_quantity = ""
+        if quantity_elem:
+            ingredient_quantity = quantity_elem.get_text()
+        
+        # 7 - print ingredient quantity raw
+        print(f"  Ingredient quantity raw: '{ingredient_quantity}'")
+        
+        # Store the ingredient data
+        all_ingredients.append([ingredient_name, ingredient_quantity])
+        print("  ---")
     
     return all_ingredients
 
@@ -272,12 +350,6 @@ def find_category(soup):
     return ""
 
 
-
-def create_file_json(data, path):
-    with open(path, "w") as file:
-        file.write(json.dumps(data, ensure_ascii=False))
-
-
 def download_page(link_to_download):
     max_retries = 3
     retry_delay = 2  # seconds
@@ -300,6 +372,12 @@ def download_page(link_to_download):
                 if debug:
                     print(f"Failed to download {link_to_download} after {max_retries} attempts: {e}")
                 raise
+
+# Main execution block
+if __name__ == "__main__":
+    print("Starting the scraper...")
+    scraper = Scraper()
+    scraper.download_cookbook()
 
 
 
