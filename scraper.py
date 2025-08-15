@@ -3,6 +3,7 @@ import os
 import re
 import sys
 import requests
+import csv
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
@@ -19,6 +20,15 @@ class Scraper:
         # Ensure the Recipes directory exists
         if not os.path.exists(self.folder_recipes):
             os.makedirs(self.folder_recipes)
+        
+        # Initialize CSV file for ingredient analysis
+        self.csv_filename = "ingredient_analysis.csv"
+        self.csv_file = open(self.csv_filename, 'w', newline='', encoding='utf-8')
+        self.csv_writer = csv.writer(self.csv_file)
+        # Write CSV header
+        self.csv_writer.writerow(['recipe_title', 'ingredient_number', 'seq', 'token_name', 'pos', 'dep'])
+        
+        print(f"CSV file '{self.csv_filename}' created with headers")
 
     def get_recipes_links(self, page_url):
         """
@@ -64,7 +74,7 @@ class Scraper:
 
     def download_cookbook(self):
         # Limit to 1 page for testing purposes
-        total_pages = min(1, self.count_total_pages() + 1)
+        total_pages = min(10, self.count_total_pages() + 1)
         total_recipes_processed = 0
         total_recipes_saved = 0
         
@@ -87,6 +97,17 @@ class Scraper:
         print(f"Total recipes processed: {total_recipes_processed}")
         print(f"Total recipes saved: {total_recipes_saved}")
         print("Scraping completed.")
+        
+        # Close CSV file
+        self.close_csv()
+    
+    def close_csv(self):
+        """
+        Close the CSV file properly
+        """
+        if hasattr(self, 'csv_file'):
+            self.csv_file.close()
+            print(f"CSV file '{self.csv_filename}' saved successfully")
 
     def process_recipe(self, link_recipe_to_download):
         soup = download_page(link_recipe_to_download)
@@ -98,7 +119,7 @@ class Scraper:
             recipe_nutritional_values = find_recipe_nutritional_values(soup)
 
             # Tokenize and analyze ingredients
-            tokenize_ingredients(ingredients)
+            tokenize_ingredients(ingredients, title, self.csv_writer)
             
             return True
         return False
@@ -192,8 +213,11 @@ def find_recipe_features(soup):
     for tag in recipes_data_tags:
         text = tag.get_text()
         if ": " in text:
-            feature, value = text.split(': ')
-            recipe_features[feature] = value
+            # Split on first occurrence of ': ' to handle multiple colons
+            parts = text.split(': ', 1)
+            if len(parts) == 2:
+                feature, value = parts
+                recipe_features[feature] = value
     
     return recipe_features
 
@@ -229,10 +253,23 @@ def download_page(link_to_download):
                 time.sleep(retry_delay)
                 retry_delay *= 2  # Exponential backoff
 
-def tokenize_ingredients(ingredients):
+def write_ingredients_to_csv(ingredients, recipe_title, csv_writer):
     """
-    Tokenize and analyze ingredients using NLP
+    Write ingredient tokens to CSV with columns: recipe_title, ingredient_number, seq, token_name, pos, dep
     """
+    for i, ingredient in enumerate(ingredients, 1):
+        # Use NLP to analyze the ingredient
+        doc = nlp(ingredient)
+        
+        for seq, token in enumerate(doc, 1):
+            csv_writer.writerow([recipe_title, i, seq, token.text, token.pos_, token.dep_])
+
+
+def tokenize_ingredients(ingredients, recipe_title, csv_writer):
+    """
+    Tokenize and analyze ingredients using NLP and save to CSV
+    """
+    print(f"\n=== RECIPE: {recipe_title} ===")
     print("\n=== INGREDIENT TOKEN ANALYSIS ===")
     
     for i, ingredient in enumerate(ingredients, 1):
@@ -246,6 +283,9 @@ def tokenize_ingredients(ingredients):
             print(f"    {token.text:<15} {token.pos_:<10} {token.dep_:<10}")
     
     print("\n" + "="*50)
+    
+    # Write to CSV
+    write_ingredients_to_csv(ingredients, recipe_title, csv_writer)
 
 
 # Main execution block
