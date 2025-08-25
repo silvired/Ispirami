@@ -2,63 +2,99 @@ import json
 import os
 import re
 import sys
+import time
 import requests
-import csv
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
 sys.path.append(os.path.abspath(".."))
-sys.path.append(os.path.abspath("test NLP"))
 
 from model_recipe import ModelRecipe
-from test_nlp import nlp
 
 class Scraper:
-    def __init__(self):
+    def __init__(self, starting_page=1, ending_page=1, resume=False):
         self.cookbook_url = "https://www.giallozafferano.it/ricette-cat"
-        self.folder_recipes = "Recipes"
-        # Ensure the Recipes directory exists
+        self.folder_recipes = "recipes"
+        self.starting_page = starting_page
+        self.ending_page = ending_page
+        
+        # Ensure the recipes directory exists
         if not os.path.exists(self.folder_recipes):
             os.makedirs(self.folder_recipes)
         
-        # Initialize CSV file for ingredient analysis
-        self.csv_filename = "ingredient_analysis.csv"
-        self.csv_file = open(self.csv_filename, 'w', newline='', encoding='utf-8')
-        self.csv_writer = csv.writer(self.csv_file)
-        # Write CSV header
-        self.csv_writer.writerow(['recipe_title', 'ingredient_number', 'seq', 'token_name', 'pos', 'dep'])
-        
-        print(f"CSV file '{self.csv_filename}' created with headers")
+        # Resume from last processed page if requested
+        if resume:
+            self.resume_from_last_page()
+
+    def get_last_processed_page(self):
+        """
+        Get the last processed page number by checking existing recipe files
+        """
+        if not os.path.exists(self.folder_recipes):
+            return 0
+            
+        # This is a simple heuristic - in practice you might want to store this in a separate file
+        # For now, we'll assume the user knows where they left off
+        return 0
+
+    def resume_from_last_page(self):
+        """
+        Resume scraping from the last processed page
+        """
+        last_page = self.get_last_processed_page()
+        if last_page > 0:
+            self.starting_page = last_page + 1
 
     def get_recipes_links(self, page_url):
         """
         Extract recipe links from a page listing recipes
         """
-        response = requests.get(page_url)
-        soup = BeautifulSoup(response.text, "html.parser")
-        recipe_links = []
+        max_retries = 3
+        retry_delay = 60  # 1 minute delay between retries
         
-        recipe_title_elements = soup.find_all(class_="gz-title")
-        
-        if recipe_title_elements:
-            for elem in recipe_title_elements:
-                # Find the <a> element inside the <h2> element
-                link_elem = elem.find('a')
-                if link_elem:
-                    href = link_elem.get('href')
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(page_url, timeout=30)
+                response.raise_for_status()
+                soup = BeautifulSoup(response.text, "html.parser")
+                recipe_links = []
+                
+                recipe_title_elements = soup.find_all(class_="gz-title")
+                
+                if recipe_title_elements:
+                    for elem in recipe_title_elements:
+                        # Find the <a> element inside the <h2> element
+                        link_elem = elem.find('a')
+                        if link_elem:
+                            href = link_elem.get('href')
+                            
+                            if href and not href.startswith('#') and not href.startswith('javascript:'):
+                                # Convert relative URL to absolute URL
+                                if href.startswith('/'):
+                                    href = 'https://www.giallozafferano.it' + href
+                                
+                                # Clean up URL by removing anchor fragments
+                                if '#' in href:
+                                    href = href.split('#')[0]
+                                
+                                recipe_links.append(href)
                     
-                    if href and not href.startswith('#') and not href.startswith('javascript:'):
-                        # Convert relative URL to absolute URL
-                        if href.startswith('/'):
-                            href = 'https://www.giallozafferano.it' + href
+                    return recipe_links
+                else:
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                    else:
+                        return []
                         
-                        # Clean up URL by removing anchor fragments
-                        if '#' in href:
-                            href = href.split('#')[0]
-                        
-                        recipe_links.append(href)
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    return []
         
-        return recipe_links
+        return []
 
     def count_total_pages(self):
         number_of_pages = 0
@@ -73,12 +109,27 @@ class Scraper:
         return number_of_pages
 
     def download_cookbook(self):
-        # Limit to 1 page for testing purposes
-        total_pages = min(10, self.count_total_pages() + 1)
+        # Determine the total number of pages available
+        total_available_pages = self.count_total_pages()
+        
+        # Determine the actual ending page
+        if self.ending_page == 'max':
+            actual_ending_page = total_available_pages
+        else:
+            actual_ending_page = min(self.ending_page, total_available_pages)
+        
+        # Validate starting page
+        if self.starting_page < 1:
+            self.starting_page = 1
+        if self.starting_page > total_available_pages:
+            return
+        
         total_recipes_processed = 0
         total_recipes_saved = 0
         
-        for page_number in range(1, total_pages + 1):
+        for page_number in range(self.starting_page, actual_ending_page + 1):
+            print("-" * 50)
+            print(f"Scraping page number {page_number}/{actual_ending_page}")
             # New URL structure: /page2/ instead of /page/2
             if page_number == 1:
                 page_url = self.cookbook_url
@@ -94,39 +145,109 @@ class Scraper:
                 if self.process_recipe(recipe_link):
                     total_recipes_saved += 1
                 
+                # Add 1 second delay between recipes
+                if i < len(recipe_links) - 1:  # Don't delay after the last recipe
+                    time.sleep(5)
+            
+            # Add 10 seconds delay between pages (except after the last page)
+            if page_number < actual_ending_page:
+                time.sleep(30)
+                
         print(f"Total recipes processed: {total_recipes_processed}")
         print(f"Total recipes saved: {total_recipes_saved}")
         print("Scraping completed.")
         
-        # Close CSV file
-        self.close_csv()
+
     
-    def close_csv(self):
+
+
+    def recipe_exists(self, title):
         """
-        Close the CSV file properly
+        Check if a recipe with the given title already exists
         """
-        if hasattr(self, 'csv_file'):
-            self.csv_file.close()
-            print(f"CSV file '{self.csv_filename}' saved successfully")
+        filename = self.calculate_file_path(title)
+        return os.path.exists(filename)
 
     def process_recipe(self, link_recipe_to_download):
         soup = download_page(link_recipe_to_download)
+        
+        # Check if page download failed
+        if soup is None:
+            print(f"Failed to download page: {link_recipe_to_download}")
+            return False
+            
         ingredients = find_ingredients(soup)
         title = find_title(soup)
+        print(f"Processing recipe: {title}")
+        
+        # Check if recipe already exists
+        if self.recipe_exists(title):
+            return False
+            
         if ingredients:
             categories = find_category(soup)
             recipe_features = find_recipe_features(soup)
             recipe_nutritional_values = find_recipe_nutritional_values(soup)
 
-            # Tokenize and analyze ingredients
-            tokenize_ingredients(ingredients, title, self.csv_writer)
+            # Save recipe to JSON file
+            recipe_data = {
+                'title': title,
+                'ingredients': ingredients,
+                'features': recipe_features,
+                'nutritional_values': recipe_nutritional_values,
+                'recipe_link': link_recipe_to_download
+            }
             
-            return True
+            # Save recipe to JSON file
+            if self.save_recipe_to_json(recipe_data):
+                return True
+            else:
+                print(f"Failed to save recipe: {title}")
+                return False
         return False
 
     def calculate_file_path(self, title):
-        compact_name = title.replace(" ", "_").lower()
-        return self.folder_recipes + "/" + compact_name + ".json"
+        """
+        Calculate a safe filename for the recipe
+        """
+        # Remove or replace problematic characters for filenames
+        safe_title = re.sub(r'[<>:"/\\|?*]', '_', title)
+        # Replace multiple spaces with single underscore
+        safe_title = re.sub(r'\s+', '_', safe_title)
+        # Remove leading/trailing underscores
+        safe_title = safe_title.strip('_')
+        # Limit length to avoid filesystem issues
+        if len(safe_title) > 100:
+            safe_title = safe_title[:100]
+        
+        return os.path.join(self.folder_recipes, f"{safe_title}.json")
+    
+    def save_recipe_to_json(self, recipe_data):
+        """
+        Save recipe data to a JSON file
+        
+        Args:
+            recipe_data (dict): Dictionary containing recipe information
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Calculate filename from title
+            filename = self.calculate_file_path(recipe_data['title'])
+            
+            # Ensure the recipes directory exists
+            os.makedirs(self.folder_recipes, exist_ok=True)
+            
+            # Save recipe to JSON file
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(recipe_data, f, ensure_ascii=False, indent=2)
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error saving recipe '{recipe_data.get('title', 'Unknown')}': {e}")
+            return False
 
     def extract_recipes_from_category(self, category_url):
         """Extract individual recipe links from a category page"""
@@ -186,60 +307,122 @@ def find_ingredients(soup):
     all_ingredients = []
     
     ingredient_tags = soup.find_all(class_="gz-ingredient")
-    for i, tag in enumerate(ingredient_tags, 1):
-        name_elem = tag.find('a')
-        ingredient_name = name_elem.get_text()
-        quantity_elem = tag.find('span')
-        ingredient_quantity_raw = quantity_elem.get_text()
-        ingredient_quantity = " ".join(ingredient_quantity_raw.replace('\t', '').split('\n')).strip()
-        full_ingredient = f"{ingredient_name} {ingredient_quantity}"
+    if not ingredient_tags:
+        print("Warning: No ingredient tags found on this page")
+        return []
         
-        all_ingredients.append(full_ingredient)
+    for i, tag in enumerate(ingredient_tags, 1):
+        try:
+            name_elem = tag.find('a')
+            if not name_elem:
+                continue
+                
+            ingredient_name = name_elem.get_text().strip()
+            if not ingredient_name:
+                continue
+                
+            quantity_elem = tag.find('span')
+            if not quantity_elem:
+                continue
+                
+            ingredient_quantity_raw = quantity_elem.get_text()
+            ingredient_quantity = " ".join(ingredient_quantity_raw.replace('\t', '').split('\n')).strip()
+            
+            # Use structured format with colon separator for better NLP analysis
+            full_ingredient = f"{ingredient_name}: {ingredient_quantity}"
+            all_ingredients.append(full_ingredient)
+            
+        except Exception as e:
+            print(f"Error processing ingredient {i}: {e}")
+            continue
     
     return all_ingredients
 
 
 def find_category(soup):
-    cat_tag = soup.find(class_="gz-breadcrumb")
-    categories = cat_tag.get_text().split('\n')
-    categories = [cat for cat in categories if cat != '']
-    
-    return categories
+    try:
+        cat_tag = soup.find(class_="gz-breadcrumb")
+        if not cat_tag:
+            print("Warning: No breadcrumb found on this page")
+            return []
+            
+        categories = cat_tag.get_text().split('\n')
+        categories = [cat.strip() for cat in categories if cat.strip()]
+        return categories
+        
+    except Exception as e:
+        print(f"Error processing categories: {e}")
+        return []
 
 
 def find_recipe_features(soup):
     recipe_features = {}
-    recipes_data_tags = soup.find_all(class_="gz-name-featured-data")
-    for tag in recipes_data_tags:
-        text = tag.get_text()
-        if ": " in text:
-            # Split on first occurrence of ': ' to handle multiple colons
-            parts = text.split(': ', 1)
-            if len(parts) == 2:
-                feature, value = parts
-                recipe_features[feature] = value
-    
+    try:
+        recipes_data_tags = soup.find_all(class_="gz-name-featured-data")
+        if not recipes_data_tags:
+            print("Warning: No recipe features found on this page")
+            return {}
+            
+        for tag in recipes_data_tags:
+            try:
+                text = tag.get_text().strip()
+                if ": " in text:
+                    # Split on first occurrence of ': ' to handle multiple colons
+                    parts = text.split(': ', 1)
+                    if len(parts) == 2:
+                        feature, value = parts
+                        recipe_features[feature.strip()] = value.strip()
+            except Exception as e:
+                print(f"Error processing recipe feature: {e}")
+                continue
+                
+    except Exception as e:
+        print(f"Error processing recipe features: {e}")
+        
     return recipe_features
 
 
 def find_recipe_nutritional_values(soup):
     recipe_nutritional_values = {}
-    macros_tags = soup.find_all(class_="gz-list-macros-name")
-    unit_tags = soup.find_all(class_="gz-list-macros-unit")
-    value_tags = soup.find_all(class_="gz-list-macros-value")
-    macros = [tag.get_text() for tag in macros_tags]
-    macros_amended = [macro.lstrip() for macro in macros]
-    value = [float(tag.get_text().replace(',','.')) for tag in value_tags]
+    try:
+        macros_tags = soup.find_all(class_="gz-list-macros-name")
+        unit_tags = soup.find_all(class_="gz-list-macros-unit")
+        value_tags = soup.find_all(class_="gz-list-macros-value")
+        
+        if not macros_tags or not value_tags:
+            print("Warning: No nutritional values found on this page")
+            return {}
+            
+        macros = [tag.get_text().strip() for tag in macros_tags]
+        macros_amended = [macro.lstrip() for macro in macros]
+        values = []
+        
+        for tag in value_tags:
+            try:
+                tag_text = tag.get_text().strip()
+                if tag_text[-3:] == ".00":
+                    tag_text = tag_text[:-3]
+                values.append(float(tag_text.replace(',','.')))
+            except (ValueError, AttributeError) as e:
+                print(f"Error processing nutritional value: {e}")
+                continue
 
-    for i in range(len(macros_amended)):
-        recipe_nutritional_values[macros_amended[i]] = value[i]
-    
+        # Only process if we have matching numbers of macros and values
+        if len(macros_amended) == len(values):
+            for i in range(len(macros_amended)):
+                recipe_nutritional_values[macros_amended[i]] = values[i]
+        else:
+            print(f"Warning: Mismatch between macros ({len(macros_amended)}) and values ({len(values)})")
+            
+    except Exception as e:
+        print(f"Error processing nutritional values: {e}")
+        
     return recipe_nutritional_values
 
 
 def download_page(link_to_download):
     max_retries = 3
-    retry_delay = 2  # seconds
+    retry_delay = 30  # 30 seconds delay between retries
     
     for attempt in range(max_retries):
         try:
@@ -247,52 +430,42 @@ def download_page(link_to_download):
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "html.parser")
             return soup
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.HTTPError) as e:
+            
+        except requests.exceptions.RequestException as e:
             if attempt < max_retries - 1:
-                import time
                 time.sleep(retry_delay)
                 retry_delay *= 2  # Exponential backoff
-
-def write_ingredients_to_csv(ingredients, recipe_title, csv_writer):
-    """
-    Write ingredient tokens to CSV with columns: recipe_title, ingredient_number, seq, token_name, pos, dep
-    """
-    for i, ingredient in enumerate(ingredients, 1):
-        # Use NLP to analyze the ingredient
-        doc = nlp(ingredient)
-        
-        for seq, token in enumerate(doc, 1):
-            csv_writer.writerow([recipe_title, i, seq, token.text, token.pos_, token.dep_])
-
-
-def tokenize_ingredients(ingredients, recipe_title, csv_writer):
-    """
-    Tokenize and analyze ingredients using NLP and save to CSV
-    """
-    print(f"\n=== RECIPE: {recipe_title} ===")
-    print("\n=== INGREDIENT TOKEN ANALYSIS ===")
+            else:
+                print("Max retries reached, returning None")
+                return None
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                print("Max retries reached, returning None")
+                return None
     
-    for i, ingredient in enumerate(ingredients, 1):
-        print(f"\nIngredient {i}: {ingredient}")
-        
-        # Use NLP to analyze the ingredient
-        doc = nlp(ingredient)
-        print(f"  Tokens: {len(doc)}")
-        
-        for token in doc:
-            print(f"    {token.text:<15} {token.pos_:<10} {token.dep_:<10}")
-    
-    print("\n" + "="*50)
-    
-    # Write to CSV
-    write_ingredients_to_csv(ingredients, recipe_title, csv_writer)
+    return None
+
+
 
 
 # Main execution block
 if __name__ == "__main__":
     print("Starting the scraper...")
-    scraper = Scraper()
+    
+    # Example 1: Scrape from page 77 to max (since page 76 was the last fully scraped)
+    scraper = Scraper(starting_page=337, ending_page='max', resume=True)
     scraper.download_cookbook()
+    
+    # Example 2: Scrape a specific range of pages
+    # scraper = Scraper(starting_page=77, ending_page=100)
+    # scraper.download_cookbook()
+    
+    # Example 3: Resume from where you left off (if you implement progress tracking)
+    # scraper = Scraper(starting_page=1, ending_page='max', resume=True)
+    # scraper.download_cookbook()
 
 
 

@@ -5,9 +5,12 @@ A smart recipe recommendation system that scrapes recipes from Giallo Zafferano 
 ## Features
 
 - **Automatic recipe scraping** from Giallo Zafferano
+- **Configurable scraping scope** - control how many pages to scrape (1 page, N pages, or all available pages)
+- **Structured recipe storage** - each recipe saved as JSON with title, ingredients, features, nutritional values, and recipe link
 - **Smart ingredient matching** based on your available ingredients
 - **Conditional execution** - only scrapes when needed
 - **Easy-to-use pipeline** with automatic dependency management
+- **Rate limiting** - built-in delays to be respectful to the website (1s between recipes, 10s between pages)
 
 ## Project Structure
 
@@ -16,12 +19,13 @@ ispirami/
 ├── main.py                 # Main pipeline orchestrator
 ├── matcher.py              # Recipe matching logic
 ├── scraper.py              # Recipe scraping from Giallo Zafferano
+├── NLP_alberto.py          # NLP processing using Alberto model
 ├── model_recipe.py         # Recipe data model
 ├── quantity_udm_parser.py  # Quantity and unit parsing
 ├── run_pipeline.sh         # Automated execution script
 ├── requirements.txt        # Python dependencies
 ├── fridge.json            # Your available ingredients
-└── Recipes/               # Downloaded recipe database
+└── recipes/               # Downloaded recipe database
     ├── spaghetti_alla_carbonara.json
     ├── crepes_dolci_e_salate.json
     └── ...
@@ -51,7 +55,7 @@ python3 main.py
 
 ## How It Works
 
-1. **Conditional Scraping**: The system checks if the `Recipes/` folder exists
+1. **Conditional Scraping**: The system checks if the `recipes/` folder exists
    - If it doesn't exist: Runs the scraper to download recipes from Giallo Zafferano
    - If it exists: Skips scraping and uses existing recipes
 
@@ -84,13 +88,51 @@ Edit `fridge.json` to include the ingredients you have:
 - `bs4` - Beautiful Soup for web scraping
 - `requests` - HTTP library for web requests
 
+## Recipe Data Structure
+
+Each recipe is saved as a JSON file in the `recipes/` folder with the following structure:
+
+```json
+{
+  "title": "Recipe Title",
+  "ingredients": [
+    "Ingredient 1: quantity",
+    "Ingredient 2: quantity"
+  ],
+  "features": {
+    "Difficoltà": "Easy",
+    "Preparazione": "15 min",
+    "Cottura": "30 min",
+    "Porzioni": "4"
+  },
+  "nutritional_values": {
+    "Calorie": 350.0,
+    "Proteine": 15.2,
+    "Carboidrati": 45.8,
+    "Grassi": 12.3
+  },
+  "recipe_link": "https://ricette.giallozafferano.it/recipe-url.html"
+}
+```
+
+## NLP Module
+
+The `NLP_alberto.py` module provides natural language processing capabilities for ingredient analysis:
+
+- **Tokenization**: Breaks down ingredient strings into individual tokens
+- **POS Analysis**: Basic part-of-speech tagging for ingredients
+- **Dependency Analysis**: Basic dependency parsing for ingredient structure
+- **Integration Ready**: Designed to be connected with the scraper for automated ingredient processing
+
+The module expects ingredients in the format "ingredient_name: quantity" and returns structured tokenization results.
+
 ## Output Example
 
 ```
 Starting ispirami pipeline...
 Requirements installed successfully.
 Executing main.py...
-Recipes folder found. Skipping scraper execution.
+recipes folder found. Skipping scraper execution.
 Running matcher...
 Found 2 matching recipes.
 Matching recipes:
@@ -104,7 +146,7 @@ Pipeline completed successfully!
 
 - **Permission denied**: Make sure `run_pipeline.sh` is executable: `chmod +x run_pipeline.sh`
 - **No recipes found**: Check that your `fridge.json` contains ingredients that match recipe requirements
-- **Scraping issues**: The scraper will only run when the Recipes folder is missing
+- **Scraping issues**: The scraper will only run when the `recipes/` folder is missing
 
 
 
